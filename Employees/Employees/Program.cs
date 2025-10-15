@@ -7,7 +7,7 @@ namespace Employees
     {
         static void Main(string[] args)
         {
-            string connectionString = @"Data Source=(localdb)\mssqllocaldb; Database=Employees;";
+            string connectionString = @"Server=(localdb)\mssqllocaldb; Database=Employees;";
             EmployeesDbContext db = new EmployeesDbContext(connectionString);
 
             Console.WriteLine("Departments:");
