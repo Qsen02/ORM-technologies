@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.Data.SqlClient;
+using System.Runtime.CompilerServices;
 
 namespace MiniORM
 {
@@ -31,7 +32,7 @@ namespace MiniORM
 
         public IEnumerable<string> FetchColumnNames(string tableName) { 
             var rows= new List<string>();
-            var queryText = $@"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME=`{tableName}`";
+            var queryText = $@"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{tableName}'";
             using (var query = CreateCommand(queryText)) {
                 using (var reader=query.ExecuteReader()) {
                     while (reader.Read())
@@ -42,6 +43,46 @@ namespace MiniORM
                 }
             }
 
+            return rows;
+        }
+
+        public IEnumerable<T> ExecuteQuery<T>(string queryText) { 
+            var rows=new List<T>();
+            using (var query = CreateCommand(queryText)) 
+            {
+                using (var reader = query.ExecuteReader())
+                {
+                    while (reader.Read()) 
+                    {
+                        var columnValues = new object[reader.FieldCount];
+                        reader.GetValues(columnValues);
+                        var obj = reader.GetFieldValue<T>(0);
+                        rows.Add(obj);
+                    }
+                }
+            }
+            return rows;
+        }
+
+        public IEnumerable<T> FetchResultSet<T>(string tableName, params string[] columnNames) 
+        { 
+            var rows=new List<T>();
+            var escapeColumns=string.Join(", ", columnNames.Select(EscapeColumn));
+            var queryText = $@"SELECT {escapeColumns} FROM {tableName}";
+            using (var query = CreateCommand(queryText)) 
+            {
+                using (var reader = query.ExecuteReader()) 
+                {
+                    while (reader.Read())
+                    {
+                        var columnValues = new object[reader.FieldCount];
+                        reader.GetValues(columnValues);
+                        var obj = MapColumnsToObject<T>(columnNames, columnValues);
+                        rows.Add(obj);
+                    }
+
+                }
+            }
             return rows;
         }
         public void InsertEntities<T>(IEnumerable<T> entities, string tableName, string[] columns) {
@@ -132,21 +173,11 @@ namespace MiniORM
         }
 
         private IEnumerable<string> GetIdentityColumns(string tableName) {
-            var identityCols = new List<string>();
-            var query = $@"SELECT COLUMN_NAME 
-                           FROM INFORMATION_SCHEMA.COLUMNS 
-                           WHERE TABLE_NAME = '{tableName}' AND COLUMNPROPERTY(object_id(TABLE_NAME), COLUMN_NAME, 'IsIdentity') = 1";
+            const string identityColumnsSQl = "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{tableName}' AND COLUMNPROPERTY(object_id(TABLE_NAME), COLUMN_NAME, 'IsIdentity') = 1";
+            var parametrizedSql = string.Format(identityColumnsSQl, tableName);
+            var identityColumns = ExecuteQuery<string>(parametrizedSql);
 
-            using (var command = CreateCommand(query))
-            using (var reader = command.ExecuteReader())
-            {
-                while (reader.Read())
-                {
-                    identityCols.Add(reader.GetString(0));
-                }
-            }
-
-            return identityCols;
+            return identityColumns;
         }
 
         public SqlTransaction StartTransaction() {
@@ -165,13 +196,20 @@ namespace MiniORM
             return $"[{c}]";
         }
 
-        private static T MapColumnsToObject<T>(string columnName, object[] columns) {
+        private static T MapColumnsToObject<T>(string[] columnNames, object[] columns) 
+        {
             var obj = Activator.CreateInstance<T>();
-            var props = typeof(T).GetProperties();
 
-            for (int i = 0; i < columns.Length && i < props.Length; i++)
+            for (var i = 0; i < columns.Length; i++)
             {
-                props[i].SetValue(obj, columns[i] == DBNull.Value ? null : columns[i]);
+                var columnName = columnNames[i];
+                var columnValue=columns[i];
+                if (columnValue is DBNull) 
+                { 
+                    columnValue = null;
+                }
+                var property = typeof(T).GetProperty(columnName);
+                property.SetValue(obj, columnName);
             }
 
             return obj;

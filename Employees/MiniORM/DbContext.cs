@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Data.SqlClient;
 using System.Linq;
 using System.Reflection;
@@ -13,7 +14,7 @@ namespace MiniORM
 
         private readonly Dictionary<Type, PropertyInfo> dbSetProperties;
 
-        internal static readonly Type[] AllowedSqlTypes = new Type[]
+        internal static readonly Type[] AllowedSqlTypes =
         {
             typeof(string), typeof(int), typeof(uint), typeof(long), typeof(ulong),
             typeof(decimal), typeof(bool), typeof(DateTime)
@@ -22,7 +23,11 @@ namespace MiniORM
         protected DbContext(string connectionString) {
             this.connection = new DatabaseConnection(connectionString);
             this.dbSetProperties = DiscoverDbSets();
-            InitializeDbSets();
+            using (new ConnectionManager(this.connection)) 
+            { 
+                this.InitializeDbSets();
+            }
+            this.MapAllRelations();
         }
 
         public void SaveChanges() {
@@ -47,8 +52,8 @@ namespace MiniORM
 
         private void Persist<TEntity>(DbSet<TEntity> dbSet) where TEntity : class, new()
         {
-            var tableName = GetTableName(typeof(TEntity));
-            var columns = this.connection.FetchColumnNames(tableName).ToArray();
+            string tableName = GetTableName(typeof(TEntity));
+            string[] columns = this.connection.FetchColumnNames(tableName).ToArray();
 
             // INSERT
             var addedEntities = dbSet.ChangeTracker.Added;
@@ -58,7 +63,7 @@ namespace MiniORM
             }
 
             // UPDATE
-            var modifiedEntities = dbSet.ChangeTracker.GetModifiedEntities(dbSet);
+            TEntity[] modifiedEntities = dbSet.ChangeTracker.GetModifiedEntities(dbSet).ToArray();
             if (modifiedEntities.Any())
             {
                 this.connection.UpdateEntities(modifiedEntities, tableName, columns);
@@ -73,14 +78,15 @@ namespace MiniORM
         }
 
         private void InitializeDbSets() {
-            foreach (var dbSetProperty in this.dbSetProperties)
+            foreach (KeyValuePair<Type,PropertyInfo> dbSet in this.dbSetProperties)
             {
-                var entityType = dbSetProperty.Key;
-                var populateMethod = typeof(DbContext)
-                    .GetMethod(nameof(PopulateDbSet), BindingFlags.NonPublic | BindingFlags.Instance)
-                    .MakeGenericMethod(entityType);
+                Type dbSetType = dbSet.Key;
+                PropertyInfo dbSetProperty= dbSet.Value;
+                MethodInfo populateDbSetGeneric = typeof(DbContext)
+                    .GetMethod("PopulateDbSet", BindingFlags.NonPublic | BindingFlags.Instance)
+                    .MakeGenericMethod(dbSetType);
 
-                populateMethod.Invoke(this, new object[] { dbSetProperty.Value });
+                populateDbSetGeneric.Invoke(this, new object[] { dbSetProperty });
             }
         }
 
@@ -303,70 +309,48 @@ namespace MiniORM
         }
 
         private static bool isObjectValid(object e) {
-            var validationContext = new ValidationContext(e);
-            var results = new List<ValidationResult>();
+            ValidationContext validationContext = new ValidationContext(e);
+            List<ValidationResult> results = new List<ValidationResult>();
             bool isValid = Validator.TryValidateObject(e, validationContext, results, true);
             return isValid;
         }
 
-        private IEnumerable<TEntity> LoadTableEntities<TEntity>() {
-            var tableName = GetTableName(typeof(TEntity));
-            var columns = this.connection.FetchColumnNames(tableName).ToArray();
-
-            var entities = new List<TEntity>();
-            var query = $"SELECT * FROM {tableName}";
-
-            using (var command = new SqlCommand(query, new SqlConnection()))
-            {
-                this.connection.Open();
-                using (var sqlCommand = new SqlCommand(query, (SqlConnection)typeof(DatabaseConnection)
-                    .GetField("connection", BindingFlags.NonPublic | BindingFlags.Instance)
-                    .GetValue(this.connection)))
-                {
-                    using (var reader = sqlCommand.ExecuteReader())
-                    {
-                        while (reader.Read())
-                        {
-                            var entity = Activator.CreateInstance<TEntity>();
-                            for (int i = 0; i < reader.FieldCount; i++)
-                            {
-                                var prop = typeof(TEntity).GetProperty(reader.GetName(i));
-                                if (prop != null && AllowedSqlTypes.Contains(prop.PropertyType))
-                                {
-                                    var value = reader.GetValue(i);
-                                    if (value is DBNull) value = null;
-                                    prop.SetValue(entity, value);
-                                }
-                            }
-                            entities.Add(entity);
-                        }
-                    }
-                }
-            }
-
-            return entities;
+        private IEnumerable<TEntity> LoadTableEntities<TEntity>() where TEntity:class 
+        {
+            Type table=typeof(TEntity);
+            string[] columns = GetEntityColumnNames(table);
+            string tableName=GetTableName(table);
+            TEntity[] fetchedRows = this.connection
+                .FetchResultSet<TEntity>(tableName, columns)
+                .ToArray();
+            return fetchedRows;
         }
 
         private string GetTableName(Type table) {
-            var tableName = table.Name;
+            string tableName = table.Name;
             return tableName;
         }
 
         private Dictionary<Type, PropertyInfo> DiscoverDbSets() {
-            var dbSets = this.GetType()
-               .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-               .Where(p => p.PropertyType.IsGenericType &&
-                           p.PropertyType.GetGenericTypeDefinition() == typeof(DbSet<>))
+            Dictionary<Type, PropertyInfo> dbSets = this.GetType()
+               .GetProperties()
+               .Where(p => p.PropertyType.GetGenericTypeDefinition() == typeof(DbSet<>))
                .ToDictionary(p => p.PropertyType.GetGenericArguments().First(), p => p);
 
             return dbSets;
         }
 
-        private string GetEntityColumnNames(Type table) {
-            var tableName = GetTableName(table);
-            var cols = this.connection.FetchColumnNames(tableName);
-            var escaped = cols.Select(c => $"[{c}]");
-            return string.Join(", ", escaped);
+        private string[] GetEntityColumnNames(Type table) {
+            string tableName = GetTableName(table);
+            IEnumerable<string> dbColumns = this.connection.FetchColumnNames(tableName);
+            string[] columns=table
+                .GetProperties()
+                .Where(p=>dbColumns.Contains(p.Name) 
+                    && !p.HasAttribute<NotMappedAttribute>() 
+                    && AllowedSqlTypes.Contains(p.PropertyType))
+                .Select(p => p.Name)
+                .ToArray();
+            return columns;
         }
     }
 }
