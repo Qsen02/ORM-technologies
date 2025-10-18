@@ -49,17 +49,18 @@ namespace Shop___Code_first
                 Quantity=quantity,
                 Ordered=DateTime.Now
             });
-            Sale newSale = (Sale)db.Sales.Where(el => el.Id == sale.Entity.Id);
-            Product product = (Product)db.Products.Where(el => el.Id == productId);
+            db.SaveChanges();
+            Sale saleЕntity=sale.Entity;
+            Product product = db.Products.FirstOrDefault(el => el.Id == productId);
             if (product != null)
             {
-                product.Sales.Add(newSale);
+                product.Sales.Add(saleЕntity);
+                db.SaveChanges();
             }
-            db.SaveChanges();
         }
         public void UpdateProduct(ShopContext db, int productId, string name, string description, double price) 
         {
-            Product product = (Product)db.Products.Where(el => (int)el.Id == productId);
+            Product product = db.Products.FirstOrDefault(el => el.Id == productId);
             product.Name = name;
             product.Description = description;
             product.Price = price;
@@ -67,7 +68,7 @@ namespace Shop___Code_first
         }
         public void DeleteProduct(ShopContext db, int productId)
         {
-            Product product = (Product)db.Products.Where(el => el.Id == productId);
+            Product product = db.Products.FirstOrDefault(el => el.Id == productId);
             if (product != null) 
             {
                 db.Products.Remove(product);
